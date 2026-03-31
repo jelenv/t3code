@@ -27,6 +27,8 @@ import type {
 } from "./project";
 import type {
   ServerConfig,
+  ServerListCodexSkillsInput,
+  ServerListCodexSkillsResult,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingResult,
 } from "./server";
@@ -172,6 +174,7 @@ export interface NativeApi {
   };
   server: {
     getConfig: () => Promise<ServerConfig>;
+    listCodexSkills: (input?: ServerListCodexSkillsInput) => Promise<ServerListCodexSkillsResult>;
     refreshProviders: () => Promise<ServerProviderUpdatedPayload>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;

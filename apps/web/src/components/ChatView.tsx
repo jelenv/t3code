@@ -31,6 +31,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { gitBranchesQueryOptions, gitCreateWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import { codexSkillsQueryOptions } from "~/lib/providerReactQuery";
 import { isElectron } from "../env";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import {
@@ -147,6 +148,14 @@ import {
   type TerminalContextDraft,
   type TerminalContextSelection,
 } from "../lib/terminalContext";
+import {
+  INLINE_SKILL_PLACEHOLDER,
+  materializeInlineSkillCursor,
+  replaceInlineSkillToken,
+  materializeInlineSkillPrompt,
+  removeInlineSkillPlaceholder,
+  type ComposerSkillDraft,
+} from "../lib/composerSkills";
 import { deriveLatestContextWindowSnapshot } from "../lib/contextWindow";
 import { shouldUseCompactComposerFooter } from "./composerFooterLayout";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -198,6 +207,11 @@ const IMAGE_ONLY_BOOTSTRAP_PROMPT =
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
+const EMPTY_CODEX_SKILLS: ReadonlyArray<{
+  name: string;
+  path: string;
+  description: string | null;
+}> = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
@@ -322,6 +336,23 @@ const terminalContextIdListsEqual = (
 ): boolean =>
   contexts.length === ids.length && contexts.every((context, index) => context.id === ids[index]);
 
+const syncSkillReferencesByIds = (
+  skills: ReadonlyArray<ComposerSkillDraft>,
+  ids: ReadonlyArray<string>,
+): ComposerSkillDraft[] => {
+  const skillsById = new Map(skills.map((skill) => [skill.id, skill]));
+  return ids.flatMap((id) => {
+    const skill = skillsById.get(id);
+    return skill ? [skill] : [];
+  });
+};
+
+const skillReferenceIdListsEqual = (
+  skills: ReadonlyArray<ComposerSkillDraft>,
+  ids: ReadonlyArray<string>,
+): boolean =>
+  skills.length === ids.length && skills.every((skill, index) => skill.id === ids[index]);
+
 interface ChatViewProps {
   threadId: ThreadId;
 }
@@ -424,14 +455,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
   const composerTerminalContexts = composerDraft.terminalContexts;
+  const composerSkillReferences = composerDraft.skillReferences;
   const composerSendState = useMemo(
     () =>
       deriveComposerSendState({
         prompt,
         imageCount: composerImages.length,
         terminalContexts: composerTerminalContexts,
+        skillReferences: composerSkillReferences,
       }),
-    [composerImages.length, composerTerminalContexts, prompt],
+    [composerImages.length, composerSkillReferences, composerTerminalContexts, prompt],
   );
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -449,11 +482,20 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const addComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.addTerminalContexts,
   );
+  const insertComposerDraftSkillReference = useComposerDraftStore(
+    (store) => store.insertSkillReference,
+  );
   const removeComposerDraftTerminalContext = useComposerDraftStore(
     (store) => store.removeTerminalContext,
   );
+  const clearComposerDraftSkillReferences = useComposerDraftStore(
+    (store) => store.clearSkillReferences,
+  );
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
+  );
+  const setComposerDraftSkillReferences = useComposerDraftStore(
+    (store) => store.setSkillReferences,
   );
   const clearComposerDraftPersistedAttachments = useComposerDraftStore(
     (store) => store.clearPersistedAttachments,
@@ -617,6 +659,28 @@ export default function ChatView({ threadId }: ChatViewProps) {
       );
     },
     [composerTerminalContexts, removeComposerDraftTerminalContext, setPrompt, threadId],
+  );
+
+  const removeComposerSkillFromDraft = useCallback(
+    (skillId: string) => {
+      const skillIndex = composerSkillReferences.findIndex((skill) => skill.id === skillId);
+      if (skillIndex < 0) {
+        return;
+      }
+      const nextPrompt = removeInlineSkillPlaceholder(promptRef.current, skillIndex);
+      promptRef.current = nextPrompt.prompt;
+      setPrompt(nextPrompt.prompt);
+      const nextSkills = composerSkillReferences.filter((skill) => skill.id !== skillId);
+      setComposerDraftSkillReferences(threadId, nextSkills);
+      setComposerCursor(nextPrompt.cursor);
+      setComposerTrigger(
+        detectComposerTrigger(
+          nextPrompt.prompt,
+          expandCollapsedComposerCursor(nextPrompt.prompt, nextPrompt.cursor),
+        ),
+      );
+    },
+    [composerSkillReferences, setComposerDraftSkillReferences, setPrompt, threadId],
   );
 
   const fallbackDraftProject = useProjectById(draftThread?.projectId);
@@ -800,6 +864,34 @@ export default function ChatView({ threadId }: ChatViewProps) {
     projectModelSelection: activeProject?.defaultModelSelection,
     settings,
   });
+
+  useEffect(() => {
+    if (selectedProvider === "codex" || composerSkillReferences.length === 0) {
+      return;
+    }
+    const downgradedCursor = materializeInlineSkillCursor({
+      prompt: promptRef.current,
+      cursor: composerCursor,
+      skills: composerSkillReferences,
+    });
+    const downgradedPrompt = materializeInlineSkillPrompt({
+      prompt: promptRef.current,
+      skills: composerSkillReferences,
+    }).text.replaceAll(INLINE_SKILL_PLACEHOLDER, "");
+    promptRef.current = downgradedPrompt;
+    setPrompt(downgradedPrompt);
+    setComposerCursor(downgradedCursor);
+    clearComposerDraftSkillReferences(threadId);
+    setComposerTrigger(detectComposerTrigger(downgradedPrompt, downgradedCursor));
+  }, [
+    clearComposerDraftSkillReferences,
+    composerCursor,
+    composerSkillReferences,
+    setComposerCursor,
+    selectedProvider,
+    setPrompt,
+    threadId,
+  ]);
   const selectedProviderModels = getProviderModels(providerStatuses, selectedProvider);
   const composerProviderState = useMemo(
     () =>
@@ -1164,6 +1256,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const composerTriggerKind = composerTrigger?.kind ?? null;
   const pathTriggerQuery = composerTrigger?.kind === "path" ? composerTrigger.query : "";
   const isPathTrigger = composerTriggerKind === "path";
+  const isSkillTrigger = composerTriggerKind === "skill" && selectedProvider === "codex";
   const [debouncedPathQuery, composerPathQueryDebouncer] = useDebouncedValue(
     pathTriggerQuery,
     { wait: COMPOSER_PATH_QUERY_DEBOUNCE_MS },
@@ -1212,7 +1305,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
       limit: 80,
     }),
   );
+  const codexSkillsQuery = useQuery(
+    codexSkillsQueryOptions({
+      enabled: isSkillTrigger,
+      cwd: gitCwd,
+    }),
+  );
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+  const codexSkills = codexSkillsQuery.data?.skills ?? EMPTY_CODEX_SKILLS;
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
@@ -1224,6 +1324,27 @@ export default function ChatView({ threadId }: ChatViewProps) {
         label: basenameOfPath(entry.path),
         description: entry.parentPath ?? "",
       }));
+    }
+
+    if (composerTrigger.kind === "skill") {
+      const query = composerTrigger.query.trim().toLowerCase();
+      return codexSkills
+        .filter((skill) => {
+          if (!query) return true;
+          return (
+            skill.name.toLowerCase().includes(query) ||
+            skill.path.toLowerCase().includes(query) ||
+            (skill.description?.toLowerCase().includes(query) ?? false)
+          );
+        })
+        .map((skill) => ({
+          id: `skill:${skill.path}`,
+          type: "skill",
+          name: skill.name,
+          path: skill.path,
+          label: `$${skill.name}`,
+          description: skill.description ?? skill.path,
+        }));
     }
 
     if (composerTrigger.kind === "slash-command") {
@@ -1275,8 +1396,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
         label: name,
         description: `${providerLabel} · ${slug}`,
       }));
-  }, [composerTrigger, searchableModelOptions, workspaceEntries]);
-  const composerMenuOpen = Boolean(composerTrigger);
+  }, [codexSkills, composerTrigger, searchableModelOptions, workspaceEntries]);
+  const composerMenuOpen = Boolean(
+    composerTrigger && (composerTrigger.kind !== "skill" || selectedProvider === "codex"),
+  );
   const activeComposerMenuItem = useMemo(
     () =>
       composerMenuItems.find((item) => item.id === composerHighlightedItemId) ??
@@ -1411,6 +1534,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         cursor: composerCursor,
         expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
         terminalContextIds: composerTerminalContexts.map((context) => context.id),
+        skillIds: composerSkillReferences.map((skill) => skill.id),
       };
       const insertion = insertInlineTerminalContextPlaceholder(
         snapshot.value,
@@ -1441,7 +1565,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
         composerEditorRef.current?.focusAt(nextCollapsedCursor);
       });
     },
-    [activeThread, composerCursor, composerTerminalContexts, insertComposerDraftTerminalContext],
+    [
+      activeThread,
+      composerCursor,
+      composerSkillReferences,
+      composerTerminalContexts,
+      insertComposerDraftTerminalContext,
+    ],
   );
   const setTerminalOpen = useCallback(
     (open: boolean) => {
@@ -2578,6 +2708,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       prompt: promptForSend,
       imageCount: composerImages.length,
       terminalContexts: composerTerminalContexts,
+      skillReferences: composerSkillReferences,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -2596,7 +2727,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return;
     }
     const standaloneSlashCommand =
-      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
+      composerImages.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerSkillReferences.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
@@ -2647,8 +2780,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
+    const composerSkillReferencesSnapshot = [...composerSkillReferences];
+    const materializedSkillPrompt = materializeInlineSkillPrompt({
+      prompt: promptForSend,
+      skills: composerSkillReferencesSnapshot,
+      liveSkills: codexSkills,
+    });
     const messageTextForSend = appendTerminalContextsToPrompt(
-      promptForSend,
+      materializedSkillPrompt.text.replaceAll(INLINE_SKILL_PLACEHOLDER, ""),
       composerTerminalContextsSnapshot,
     );
     const messageIdForSend = newMessageId();
@@ -2840,6 +2979,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
           role: "user",
           text: outgoingMessageText,
           attachments: turnAttachments,
+          ...(materializedSkillPrompt.skillReferences.length > 0
+            ? { skillReferences: materializedSkillPrompt.skillReferences }
+            : {}),
         },
         modelSelection: selectedModelSelection,
         titleSeed: title,
@@ -2877,6 +3019,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         setComposerCursor(collapseExpandedComposerCursor(promptForSend, promptForSend.length));
         addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageForRetry));
         addComposerTerminalContextsToDraft(composerTerminalContextsSnapshot);
+        setComposerDraftSkillReferences(threadIdForSend, composerSkillReferencesSnapshot);
         setComposerTrigger(detectComposerTrigger(promptForSend, promptForSend.length));
       }
       setThreadError(
@@ -3418,6 +3561,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     cursor: number;
     expandedCursor: number;
     terminalContextIds: string[];
+    skillIds: string[];
   } => {
     const editorSnapshot = composerEditorRef.current?.readSnapshot();
     if (editorSnapshot) {
@@ -3428,8 +3572,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       cursor: composerCursor,
       expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
       terminalContextIds: composerTerminalContexts.map((context) => context.id),
+      skillIds: composerSkillReferences.map((skill) => skill.id),
     };
-  }, [composerCursor, composerTerminalContexts]);
+  }, [composerCursor, composerSkillReferences, composerTerminalContexts]);
 
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
@@ -3469,6 +3614,43 @@ export default function ChatView({ threadId }: ChatViewProps) {
         }
         return;
       }
+      if (item.type === "skill") {
+        const insertion = replaceInlineSkillToken(
+          snapshot.value,
+          trigger.rangeStart,
+          trigger.rangeEnd,
+        );
+        const nextCollapsedCursor = collapseExpandedComposerCursor(
+          insertion.prompt,
+          insertion.cursor,
+        );
+        const inserted = activeThread
+          ? insertComposerDraftSkillReference(
+              activeThread.id,
+              insertion.prompt,
+              {
+                id: randomUUID(),
+                provider: "codex",
+                name: item.name,
+                path: item.path,
+                description: item.description === item.path ? null : item.description,
+              },
+              insertion.skillIndex,
+            )
+          : false;
+        if (!inserted) {
+          return;
+        }
+        promptRef.current = insertion.prompt;
+        setComposerCursor(nextCollapsedCursor);
+        setComposerTrigger(null);
+        setComposerHighlightedItemId(null);
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAt(nextCollapsedCursor);
+        });
+        return;
+      }
+
       if (item.type === "slash-command") {
         if (item.command === "model") {
           const replacement = "/model ";
@@ -3506,8 +3688,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
     },
     [
+      activeThread,
       applyPromptReplacement,
       handleInteractionModeChange,
+      insertComposerDraftSkillReference,
       onProviderModelSelect,
       resolveActiveComposerTrigger,
     ],
@@ -3534,10 +3718,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [composerHighlightedItemId, composerMenuItems],
   );
   const isComposerMenuLoading =
-    composerTriggerKind === "path" &&
-    ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
-      workspaceEntriesQuery.isLoading ||
-      workspaceEntriesQuery.isFetching);
+    (composerTriggerKind === "path" &&
+      ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
+        workspaceEntriesQuery.isLoading ||
+        workspaceEntriesQuery.isFetching)) ||
+    (composerTriggerKind === "skill" && codexSkillsQuery.isFetching);
 
   const onPromptChange = useCallback(
     (
@@ -3546,6 +3731,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       expandedCursor: number,
       cursorAdjacentToMention: boolean,
       terminalContextIds: string[],
+      skillIds: string[],
     ) => {
       if (activePendingProgress?.activeQuestion && activePendingUserInput) {
         onChangeActivePendingUserInputCustomAnswer(
@@ -3565,6 +3751,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
           syncTerminalContextsByIds(composerTerminalContexts, terminalContextIds),
         );
       }
+      if (!skillReferenceIdListsEqual(composerSkillReferences, skillIds)) {
+        setComposerDraftSkillReferences(
+          threadId,
+          syncSkillReferencesByIds(composerSkillReferences, skillIds),
+        );
+      }
       setComposerCursor(nextCursor);
       setComposerTrigger(
         cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
@@ -3573,9 +3765,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [
       activePendingProgress?.activeQuestion,
       activePendingUserInput,
+      composerSkillReferences,
       composerTerminalContexts,
       onChangeActivePendingUserInputCustomAnswer,
       setPrompt,
+      setComposerDraftSkillReferences,
       setComposerDraftTerminalContexts,
       threadId,
     ],
@@ -3938,7 +4132,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           ? composerTerminalContexts
                           : []
                       }
+                      skillReferences={
+                        !isComposerApprovalState && pendingUserInputs.length === 0
+                          ? composerSkillReferences
+                          : []
+                      }
                       onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
+                      onRemoveSkill={removeComposerSkillFromDraft}
                       onChange={onPromptChange}
                       onCommandKeyDown={onComposerCommandKey}
                       onPaste={onComposerPaste}

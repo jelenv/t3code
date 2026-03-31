@@ -362,6 +362,7 @@ function EventRouter() {
     const unsubServerConfigUpdated = onServerConfigUpdated((payload) => {
       // Invalidate the config query so active observers refetch fresh data.
       void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
+      void queryClient.invalidateQueries({ queryKey: providerQueryKeys.codexSkillsRoot });
 
       if (!subscribed) return;
 
@@ -408,6 +409,7 @@ function EventRouter() {
     });
     const unsubProvidersUpdated = onServerProvidersUpdated(() => {
       void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
+      void queryClient.invalidateQueries({ queryKey: providerQueryKeys.codexSkillsRoot });
     });
     subscribed = true;
     return () => {

@@ -9,6 +9,7 @@ import {
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
 } from "../lib/terminalContext";
+import { stripInlineSkillPlaceholders, type ComposerSkillDraft } from "../lib/composerSkills";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 const WORKTREE_BRANCH_PREFIX = "t3code";
@@ -123,13 +124,16 @@ export function deriveComposerSendState(options: {
   prompt: string;
   imageCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  skillReferences: ReadonlyArray<ComposerSkillDraft>;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
   expiredTerminalContextCount: number;
   hasSendableContent: boolean;
 } {
-  const trimmedPrompt = stripInlineTerminalContextPlaceholders(options.prompt).trim();
+  const trimmedPrompt = stripInlineSkillPlaceholders(
+    stripInlineTerminalContextPlaceholders(options.prompt),
+  ).trim();
   const sendableTerminalContexts = filterTerminalContextsWithText(options.terminalContexts);
   const expiredTerminalContextCount =
     options.terminalContexts.length - sendableTerminalContexts.length;
@@ -138,7 +142,10 @@ export function deriveComposerSendState(options: {
     sendableTerminalContexts,
     expiredTerminalContextCount,
     hasSendableContent:
-      trimmedPrompt.length > 0 || options.imageCount > 0 || sendableTerminalContexts.length > 0,
+      trimmedPrompt.length > 0 ||
+      options.imageCount > 0 ||
+      sendableTerminalContexts.length > 0 ||
+      options.skillReferences.length > 0,
   };
 }
 

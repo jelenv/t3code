@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
+import { type CodexSkillSummary } from "@t3tools/contracts";
 import { readCodexAccountSnapshot, type CodexAccountSnapshot } from "./codexAccount";
 
 interface JsonRpcProbeResponse {
@@ -10,8 +11,63 @@ interface JsonRpcProbeResponse {
   };
 }
 
+interface CodexSkillListResponse {
+  readonly data?: ReadonlyArray<{
+    readonly skills?: ReadonlyArray<{
+      readonly name?: unknown;
+      readonly path?: unknown;
+      readonly description?: unknown;
+      readonly enabled?: unknown;
+    }>;
+  }>;
+}
+
 function readErrorMessage(response: JsonRpcProbeResponse): string | undefined {
   return typeof response.error?.message === "string" ? response.error.message : undefined;
+}
+
+function normalizeCodexSkillDescription(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function decodeEnabledCodexSkills(response: unknown): CodexSkillSummary[] {
+  const decoded = response as CodexSkillListResponse;
+  const skillsByPath = new Map<string, CodexSkillSummary>();
+
+  for (const entry of decoded.data ?? []) {
+    for (const skill of entry.skills ?? []) {
+      if (skill.enabled !== true) {
+        continue;
+      }
+      if (typeof skill.name !== "string" || skill.name.trim().length === 0) {
+        continue;
+      }
+      if (typeof skill.path !== "string" || skill.path.trim().length === 0) {
+        continue;
+      }
+      const normalizedPath = skill.path.trim();
+      if (skillsByPath.has(normalizedPath)) {
+        continue;
+      }
+      skillsByPath.set(normalizedPath, {
+        name: skill.name.trim(),
+        path: normalizedPath,
+        description: normalizeCodexSkillDescription(skill.description),
+      });
+    }
+  }
+
+  return [...skillsByPath.values()].toSorted((left, right) => {
+    const byName = left.name.localeCompare(right.name);
+    if (byName !== 0) {
+      return byName;
+    }
+    return left.path.localeCompare(right.path);
+  });
 }
 
 export function buildCodexInitializeParams() {
@@ -40,11 +96,16 @@ export function killCodexChildProcess(child: ChildProcessWithoutNullStreams): vo
   child.kill();
 }
 
-export async function probeCodexAccount(input: {
+async function probeCodexAppServer<Result>(input: {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly signal?: AbortSignal;
-}): Promise<CodexAccountSnapshot> {
+  readonly requestId: number;
+  readonly requestMethod: string;
+  readonly requestParams: Record<string, unknown>;
+  readonly label: string;
+  readonly decodeResult: (result: unknown) => Result;
+}): Promise<Result> {
   return await new Promise((resolve, reject) => {
     const child = spawn(input.binaryPath, ["app-server"], {
       env: {
@@ -79,15 +140,17 @@ export async function probeCodexAccount(input: {
         reject(
           error instanceof Error
             ? error
-            : new Error(`Codex account probe failed: ${String(error)}.`),
+            : new Error(`Codex ${input.label} probe failed: ${String(error)}.`),
         ),
       );
 
     if (input.signal?.aborted) {
-      fail(new Error("Codex account probe aborted."));
+      fail(new Error(`Codex ${input.label} probe aborted.`));
       return;
     }
-    input.signal?.addEventListener("abort", () => fail(new Error("Codex account probe aborted.")));
+    input.signal?.addEventListener("abort", () =>
+      fail(new Error(`Codex ${input.label} probe aborted.`)),
+    );
 
     const writeMessage = (message: unknown) => {
       if (!child.stdin.writable) {
@@ -95,7 +158,8 @@ export async function probeCodexAccount(input: {
         return;
       }
 
-      child.stdin.write(`${JSON.stringify(message)}\n`);
+      child.stdin.write(`${JSON.stringify(message)}
+`);
     };
 
     output.on("line", (line) => {
@@ -103,7 +167,7 @@ export async function probeCodexAccount(input: {
       try {
         parsed = JSON.parse(line);
       } catch {
-        fail(new Error("Received invalid JSON from codex app-server during account probe."));
+        fail(new Error(`Received invalid JSON from codex app-server during ${input.label} probe.`));
         return;
       }
 
@@ -120,18 +184,22 @@ export async function probeCodexAccount(input: {
         }
 
         writeMessage({ method: "initialized" });
-        writeMessage({ id: 2, method: "account/read", params: {} });
+        writeMessage({
+          id: input.requestId,
+          method: input.requestMethod,
+          params: input.requestParams,
+        });
         return;
       }
 
-      if (response.id === 2) {
+      if (response.id === input.requestId) {
         const errorMessage = readErrorMessage(response);
         if (errorMessage) {
-          fail(new Error(`account/read failed: ${errorMessage}`));
+          fail(new Error(`${input.requestMethod} failed: ${errorMessage}`));
           return;
         }
 
-        finish(() => resolve(readCodexAccountSnapshot(response.result)));
+        finish(() => resolve(input.decodeResult(response.result)));
       }
     });
 
@@ -150,5 +218,36 @@ export async function probeCodexAccount(input: {
       method: "initialize",
       params: buildCodexInitializeParams(),
     });
+  });
+}
+
+export async function probeCodexAccount(input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly signal?: AbortSignal;
+}): Promise<CodexAccountSnapshot> {
+  return await probeCodexAppServer({
+    ...input,
+    requestId: 2,
+    requestMethod: "account/read",
+    requestParams: {},
+    label: "account",
+    decodeResult: readCodexAccountSnapshot,
+  });
+}
+
+export async function probeCodexSkills(input: {
+  readonly binaryPath: string;
+  readonly homePath?: string;
+  readonly cwd?: string;
+  readonly signal?: AbortSignal;
+}): Promise<CodexSkillSummary[]> {
+  return await probeCodexAppServer({
+    ...input,
+    requestId: 3,
+    requestMethod: "skills/list",
+    requestParams: input.cwd ? { cwds: [input.cwd] } : {},
+    label: "skills",
+    decodeResult: decodeEnabledCodexSkills,
   });
 }

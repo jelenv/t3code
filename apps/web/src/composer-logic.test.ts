@@ -12,6 +12,36 @@ import {
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 describe("detectComposerTrigger", () => {
+  it("detects bare $ skill trigger", () => {
+    const text = "$";
+    const trigger = detectComposerTrigger(text, text.length);
+
+    expect(trigger).toEqual({
+      kind: "skill",
+      query: "",
+      rangeStart: 0,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("detects $ skill trigger with query", () => {
+    const text = "$test";
+    const trigger = detectComposerTrigger(text, text.length);
+
+    expect(trigger).toEqual({
+      kind: "skill",
+      query: "test",
+      rangeStart: 0,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("does not detect $ skill trigger inside another word", () => {
+    const text = "price$test";
+
+    expect(detectComposerTrigger(text, text.length)).toBeNull();
+  });
+
   it("detects @path trigger at cursor", () => {
     const text = "Please check @src/com";
     const trigger = detectComposerTrigger(text, text.length);

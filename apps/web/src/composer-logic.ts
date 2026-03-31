@@ -1,7 +1,14 @@
 import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
+import { INLINE_SKILL_PLACEHOLDER } from "./lib/composerSkills";
 
-export type ComposerTriggerKind = "path" | "slash-command" | "slash-model";
+type InlineComposerSegment =
+  | { type: "text"; text: string }
+  | { type: "mention" }
+  | { type: "terminal-context" }
+  | { type: "skill" };
+
+export type ComposerTriggerKind = "path" | "skill" | "slash-command" | "slash-model";
 export type ComposerSlashCommand = "model" | "plan" | "default";
 
 export interface ComposerTrigger {
@@ -12,9 +19,7 @@ export interface ComposerTrigger {
 }
 
 const SLASH_COMMANDS: readonly ComposerSlashCommand[] = ["model", "plan", "default"];
-const isInlineTokenSegment = (
-  segment: { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" },
-): boolean => segment.type !== "text";
+const isInlineTokenSegment = (segment: InlineComposerSegment): boolean => segment.type !== "text";
 
 function clampCursor(text: string, cursor: number): number {
   if (!Number.isFinite(cursor)) return text.length;
@@ -27,7 +32,8 @@ function isWhitespace(char: string): boolean {
     char === "\n" ||
     char === "\t" ||
     char === "\r" ||
-    char === INLINE_TERMINAL_CONTEXT_PLACEHOLDER
+    char === INLINE_TERMINAL_CONTEXT_PLACEHOLDER ||
+    char === INLINE_SKILL_PLACEHOLDER
   );
 }
 
@@ -59,7 +65,7 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
       expandedCursor += expandedLength;
       continue;
     }
-    if (segment.type === "terminal-context") {
+    if (segment.type === "terminal-context" || segment.type === "skill") {
       if (remaining <= 1) {
         return expandedCursor + remaining;
       }
@@ -79,9 +85,7 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
   return expandedCursor;
 }
 
-function collapsedSegmentLength(
-  segment: { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" },
-): number {
+function collapsedSegmentLength(segment: InlineComposerSegment): number {
   if (segment.type === "text") {
     return segment.text.length;
   }
@@ -89,9 +93,7 @@ function collapsedSegmentLength(
 }
 
 function clampCollapsedComposerCursorForSegments(
-  segments: ReadonlyArray<
-    { type: "text"; text: string } | { type: "mention" } | { type: "terminal-context" }
-  >,
+  segments: ReadonlyArray<InlineComposerSegment>,
   cursorInput: number,
 ): number {
   const collapsedLength = segments.reduce(
@@ -134,7 +136,7 @@ export function collapseExpandedComposerCursor(text: string, cursorInput: number
       collapsedCursor += 1;
       continue;
     }
-    if (segment.type === "terminal-context") {
+    if (segment.type === "terminal-context" || segment.type === "skill") {
       if (remaining <= 1) {
         return collapsedCursor + remaining;
       }
@@ -225,16 +227,25 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 
   const tokenStart = tokenStartForCursor(text, cursor);
   const token = text.slice(tokenStart, cursor);
-  if (!token.startsWith("@")) {
-    return null;
+  if (token.startsWith("@")) {
+    return {
+      kind: "path",
+      query: token.slice(1),
+      rangeStart: tokenStart,
+      rangeEnd: cursor,
+    };
   }
 
-  return {
-    kind: "path",
-    query: token.slice(1),
-    rangeStart: tokenStart,
-    rangeEnd: cursor,
-  };
+  if (token.startsWith("$")) {
+    return {
+      kind: "skill",
+      query: token.slice(1),
+      rangeStart: tokenStart,
+      rangeEnd: cursor,
+    };
+  }
+
+  return null;
 }
 
 export function parseStandaloneComposerSlashCommand(
@@ -258,5 +269,8 @@ export function replaceTextRange(
   const safeStart = Math.max(0, Math.min(text.length, rangeStart));
   const safeEnd = Math.max(safeStart, Math.min(text.length, rangeEnd));
   const nextText = `${text.slice(0, safeStart)}${replacement}${text.slice(safeEnd)}`;
-  return { text: nextText, cursor: safeStart + replacement.length };
+  return {
+    text: nextText,
+    cursor: safeStart + replacement.length,
+  };
 }

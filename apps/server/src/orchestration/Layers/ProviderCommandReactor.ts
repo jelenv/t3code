@@ -5,6 +5,7 @@ import {
   type ModelSelection,
   type OrchestrationEvent,
   ProviderKind,
+  type ProviderTurnSkillReference,
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
@@ -361,6 +362,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
+    readonly skillReferences?: ReadonlyArray<ProviderTurnSkillReference>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
     readonly createdAt: string;
@@ -404,6 +406,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+      ...(input.skillReferences !== undefined ? { skillReferences: input.skillReferences } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     });
@@ -564,6 +567,9 @@ const make = Effect.gen(function* () {
       threadId: event.payload.threadId,
       messageText: message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+      ...(message.skillReferences !== undefined
+        ? { skillReferences: message.skillReferences }
+        : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }
         : {}),

@@ -1,7 +1,7 @@
 import { type ProjectEntry, type ProviderKind } from "@t3tools/contracts";
 import { memo, useLayoutEffect, useRef } from "react";
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
-import { BotIcon } from "lucide-react";
+import { BotIcon, SquareChartGanttIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
 import { Command, CommandItem, CommandList } from "../ui/command";
@@ -20,6 +20,14 @@ export type ComposerCommandItem =
       id: string;
       type: "slash-command";
       command: ComposerSlashCommand;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "skill";
+      name: string;
+      path: string;
       label: string;
       description: string;
     }
@@ -80,10 +88,14 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         {props.items.length === 0 && (
           <p className="px-3 py-2 text-muted-foreground/70 text-xs">
             {props.isLoading
-              ? "Searching workspace files..."
+              ? props.triggerKind === "skill"
+                ? "Loading Codex skills..."
+                : "Searching workspace files..."
               : props.triggerKind === "path"
                 ? "No matching files or folders."
-                : "No matching command."}
+                : props.triggerKind === "skill"
+                  ? "No matching skills."
+                  : "No matching command."}
           </p>
         )}
       </div>
@@ -126,15 +138,28 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       {props.item.type === "slash-command" ? (
         <BotIcon className="size-4 text-muted-foreground/80" />
       ) : null}
+      {props.item.type === "skill" ? (
+        <SquareChartGanttIcon className="size-4 text-muted-foreground/65" />
+      ) : null}
       {props.item.type === "model" ? (
         <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
           model
         </Badge>
       ) : null}
-      <span className="flex min-w-0 items-center gap-1.5 truncate">
-        <span className="truncate">{props.item.label}</span>
-      </span>
-      <span className="truncate text-muted-foreground/70 text-xs">{props.item.description}</span>
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span
+          className={cn(
+            "shrink-0 truncate text-foreground/95",
+            props.item.type === "skill" ? "max-w-[32ch]" : "max-w-[22ch]",
+          )}
+          title={props.item.label}
+        >
+          {props.item.label}
+        </span>
+        <span className="min-w-0 truncate text-muted-foreground/70 text-xs">
+          {props.item.description}
+        </span>
+      </div>
     </CommandItem>
   );
 });

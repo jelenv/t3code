@@ -50,6 +50,24 @@ export const ServerProviderModel = Schema.Struct({
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
 
+export const CodexSkillSummary = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  path: TrimmedNonEmptyString,
+  description: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type CodexSkillSummary = typeof CodexSkillSummary.Type;
+
+export const ServerListCodexSkillsInput = Schema.Struct({
+  cwd: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerListCodexSkillsInput = typeof ServerListCodexSkillsInput.Type;
+
+export const ServerListCodexSkillsResult = Schema.Struct({
+  skills: Schema.Array(CodexSkillSummary),
+  fetchedAt: IsoDateTime,
+});
+export type ServerListCodexSkillsResult = typeof ServerListCodexSkillsResult.Type;
+
 export const ServerProvider = Schema.Struct({
   provider: ProviderKind,
   enabled: Schema.Boolean,

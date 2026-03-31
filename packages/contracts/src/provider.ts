@@ -19,6 +19,7 @@ import {
   ProviderKind,
   ProviderRequestKind,
   ProviderSandboxMode,
+  ProviderTurnSkillReference,
   ProviderUserInputAnswers,
   RuntimeMode,
 } from "./orchestration";
@@ -66,6 +67,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   attachments: Schema.optional(
     Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
   ),
+  skillReferences: Schema.optional(Schema.Array(ProviderTurnSkillReference)),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
 });

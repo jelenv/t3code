@@ -81,6 +81,7 @@ import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolve
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
 import { WorkspacePaths } from "./workspace/Services/WorkspacePaths.ts";
+import { probeCodexSkills } from "./provider/codexAppServer";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -851,6 +852,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           providers,
           availableEditors,
           settings,
+        };
+      }
+
+      case WS_METHODS.serverListCodexSkills: {
+        const body = request.body;
+        const settings = yield* serverSettingsManager.getSettings;
+        const skills = yield* Effect.tryPromise((signal) =>
+          probeCodexSkills({
+            binaryPath: settings.providers.codex.binaryPath,
+            ...(settings.providers.codex.homePath
+              ? { homePath: settings.providers.codex.homePath }
+              : {}),
+            ...(body.cwd ? { cwd: body.cwd } : {}),
+            signal,
+          }),
+        ).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error instanceof Error ? error.message : String(error),
+              }),
+          ),
+        );
+        return {
+          skills,
+          fetchedAt: new Date().toISOString(),
         };
       }
 

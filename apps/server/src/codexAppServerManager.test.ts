@@ -521,6 +521,253 @@ describe("sendTurn", () => {
     });
   });
 
+  it("resolves unique $skill tokens through skills/list before turn/start", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "skills/list") {
+        return {
+          data: [
+            {
+              cwd: "/repo",
+              errors: [],
+              skills: [
+                {
+                  name: "repo_scout",
+                  path: "/repo/.codex/skills/repo_scout/SKILL.md",
+                  enabled: true,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return {
+        turn: {
+          id: "turn_1",
+        },
+      };
+    });
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use $repo_scout to inspect this repo",
+    });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, context, "skills/list", {});
+    expect(sendRequest).toHaveBeenNthCalledWith(2, context, "turn/start", {
+      threadId: "thread_1",
+      input: [
+        {
+          type: "text",
+          text: "Use ",
+          text_elements: [],
+        },
+        {
+          type: "skill",
+          name: "repo_scout",
+          path: "/repo/.codex/skills/repo_scout/SKILL.md",
+        },
+        {
+          type: "text",
+          text: " to inspect this repo",
+          text_elements: [],
+        },
+      ],
+      model: "gpt-5.3-codex",
+    });
+  });
+
+  it("falls back to plain text when a $skill token is ambiguous", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "skills/list") {
+        return {
+          data: [
+            {
+              cwd: "/repo",
+              errors: [],
+              skills: [
+                {
+                  name: "repo_scout",
+                  path: "/repo/.codex/skills/repo_scout/SKILL.md",
+                  enabled: true,
+                },
+                {
+                  name: "repo_scout",
+                  path: "/home/vilem/.codex/skills/repo_scout/SKILL.md",
+                  enabled: true,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return {
+        turn: {
+          id: "turn_1",
+        },
+      };
+    });
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use $repo_scout to inspect this repo",
+    });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, context, "skills/list", {});
+    expect(sendRequest).toHaveBeenNthCalledWith(2, context, "turn/start", {
+      threadId: "thread_1",
+      input: [
+        {
+          type: "text",
+          text: "Use $repo_scout to inspect this repo",
+          text_elements: [],
+        },
+      ],
+      model: "gpt-5.3-codex",
+    });
+  });
+
+  it("uses explicit skill references to preserve duplicate-name chip identity", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "skills/list") {
+        return {
+          data: [
+            {
+              cwd: "/repo",
+              errors: [],
+              skills: [
+                {
+                  name: "repo_scout",
+                  path: "/repo/.codex/skills/repo_scout/SKILL.md",
+                  enabled: true,
+                },
+                {
+                  name: "repo_scout",
+                  path: "/home/vilem/.codex/skills/repo_scout/SKILL.md",
+                  enabled: true,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return {
+        turn: {
+          id: "turn_1",
+        },
+      };
+    });
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use $repo_scout and then $repo_scout",
+      skillReferences: [
+        {
+          provider: "codex",
+          name: "repo_scout",
+          path: "/home/vilem/.codex/skills/repo_scout/SKILL.md",
+          tokenIndex: 1,
+        },
+      ],
+    });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(2, context, "turn/start", {
+      threadId: "thread_1",
+      input: [
+        {
+          type: "text",
+          text: "Use $repo_scout and then ",
+          text_elements: [],
+        },
+        {
+          type: "skill",
+          name: "repo_scout",
+          path: "/home/vilem/.codex/skills/repo_scout/SKILL.md",
+        },
+      ],
+      model: "gpt-5.3-codex",
+    });
+  });
+
+  it("falls back to plain text when skills/list fails", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "skills/list") {
+        throw new Error("method not found");
+      }
+      return {
+        turn: {
+          id: "turn_1",
+        },
+      };
+    });
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use $repo_scout to inspect this repo",
+    });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, context, "skills/list", {});
+    expect(sendRequest).toHaveBeenNthCalledWith(2, context, "turn/start", {
+      threadId: "thread_1",
+      input: [
+        {
+          type: "text",
+          text: "Use $repo_scout to inspect this repo",
+          text_elements: [],
+        },
+      ],
+      model: "gpt-5.3-codex",
+    });
+  });
+
+  it("uses explicit skill references when skills/list fails", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    sendRequest.mockImplementation(async (_context, method) => {
+      if (method === "skills/list") {
+        throw new Error("method not found");
+      }
+      return {
+        turn: {
+          id: "turn_1",
+        },
+      };
+    });
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use $repo_scout",
+      skillReferences: [
+        {
+          provider: "codex",
+          name: "repo_scout",
+          path: "/repo/.codex/skills/repo_scout/SKILL.md",
+          tokenIndex: 0,
+        },
+      ],
+    });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, context, "skills/list", {});
+    expect(sendRequest).toHaveBeenNthCalledWith(2, context, "turn/start", {
+      threadId: "thread_1",
+      input: [
+        {
+          type: "text",
+          text: "Use ",
+          text_elements: [],
+        },
+        {
+          type: "skill",
+          name: "repo_scout",
+          path: "/repo/.codex/skills/repo_scout/SKILL.md",
+        },
+      ],
+      model: "gpt-5.3-codex",
+    });
+  });
+
   it("supports image-only turns", async () => {
     const { manager, context, sendRequest } = createSendTurnHarness();
 

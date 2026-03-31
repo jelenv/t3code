@@ -1,6 +1,7 @@
 import {
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
+  type ServerListCodexSkillsResult,
   ThreadId,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
@@ -17,6 +18,8 @@ interface CheckpointDiffQueryInput {
 
 export const providerQueryKeys = {
   all: ["providers"] as const,
+  codexSkillsRoot: ["providers", "codex-skills"] as const,
+  codexSkills: (cwd?: string | null) => ["providers", "codex-skills", cwd ?? null] as const,
   checkpointDiff: (input: CheckpointDiffQueryInput) =>
     [
       "providers",
@@ -87,6 +90,24 @@ function isCheckpointTemporarilyUnavailable(error: unknown): boolean {
     message.includes("checkpoint is unavailable for turn") ||
     message.includes("filesystem checkpoint is unavailable")
   );
+}
+
+const EMPTY_CODEX_SKILLS_RESULT: ServerListCodexSkillsResult = {
+  skills: [],
+  fetchedAt: "1970-01-01T00:00:00.000Z",
+};
+
+export function codexSkillsQueryOptions(input?: { enabled?: boolean; cwd?: string | null }) {
+  return queryOptions({
+    queryKey: providerQueryKeys.codexSkills(input?.cwd),
+    queryFn: async () => {
+      const api = ensureNativeApi();
+      return await api.server.listCodexSkills(input?.cwd ? { cwd: input.cwd } : undefined);
+    },
+    enabled: input?.enabled ?? true,
+    staleTime: 30_000,
+    placeholderData: EMPTY_CODEX_SKILLS_RESULT,
+  });
 }
 
 export function checkpointDiffQueryOptions(input: CheckpointDiffQueryInput) {

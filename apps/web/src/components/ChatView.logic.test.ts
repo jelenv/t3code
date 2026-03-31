@@ -27,6 +27,7 @@ describe("deriveComposerSendState", () => {
           createdAt: "2026-03-17T12:52:29.000Z",
         },
       ],
+      skillReferences: [],
     });
 
     expect(state.trimmedPrompt).toBe("");
@@ -51,10 +52,31 @@ describe("deriveComposerSendState", () => {
           createdAt: "2026-03-17T12:52:29.000Z",
         },
       ],
+      skillReferences: [],
     });
 
     expect(state.trimmedPrompt).toBe("yoo  waddup");
     expect(state.expiredTerminalContextCount).toBe(1);
+    expect(state.hasSendableContent).toBe(true);
+  });
+
+  it("treats skill-only prompts as sendable content", () => {
+    const state = deriveComposerSendState({
+      prompt: "\uE000",
+      imageCount: 0,
+      terminalContexts: [],
+      skillReferences: [
+        {
+          id: "skill-1",
+          provider: "codex",
+          name: "review-pr",
+          path: "/skills/review-pr",
+          description: null,
+        },
+      ],
+    });
+
+    expect(state.trimmedPrompt).toBe("");
     expect(state.hasSendableContent).toBe(true);
   });
 });

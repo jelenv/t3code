@@ -1,16 +1,24 @@
 import { ThreadId, type NativeApi } from "@t3tools/contracts";
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkpointDiffQueryOptions, providerQueryKeys } from "./providerReactQuery";
+import {
+  checkpointDiffQueryOptions,
+  codexSkillsQueryOptions,
+  providerQueryKeys,
+} from "./providerReactQuery";
 import * as nativeApi from "../nativeApi";
 
 const threadId = ThreadId.makeUnsafe("thread-id");
 
 function mockNativeApi(input: {
+  listCodexSkills?: ReturnType<typeof vi.fn>;
   getTurnDiff: ReturnType<typeof vi.fn>;
   getFullThreadDiff: ReturnType<typeof vi.fn>;
 }) {
   vi.spyOn(nativeApi, "ensureNativeApi").mockReturnValue({
+    server: {
+      listCodexSkills: input.listCodexSkills ?? vi.fn(),
+    },
     orchestration: {
       getTurnDiff: input.getTurnDiff,
       getFullThreadDiff: input.getFullThreadDiff,
@@ -41,6 +49,49 @@ describe("providerQueryKeys.checkpointDiff", () => {
         cacheScope: "turn:new-turn",
       }),
     );
+  });
+});
+
+describe("providerQueryKeys.codexSkills", () => {
+  it("exposes a shared root key for invalidating all cwd-scoped skill catalogs", () => {
+    expect(providerQueryKeys.codexSkillsRoot).toEqual(["providers", "codex-skills"]);
+  });
+
+  it("includes cwd so skill catalogs do not collide across projects", () => {
+    expect(providerQueryKeys.codexSkills("/repo-a")).not.toEqual(
+      providerQueryKeys.codexSkills("/repo-b"),
+    );
+  });
+});
+
+describe("codexSkillsQueryOptions", () => {
+  it("forwards cwd to the server skill-list RPC", async () => {
+    const listCodexSkills = vi.fn().mockResolvedValue({
+      skills: [],
+      fetchedAt: "2026-03-31T00:00:00.000Z",
+    });
+    mockNativeApi({
+      listCodexSkills,
+      getTurnDiff: vi.fn(),
+      getFullThreadDiff: vi.fn(),
+    });
+
+    const queryClient = new QueryClient();
+    await queryClient.fetchQuery(
+      codexSkillsQueryOptions({
+        cwd: "/repo",
+      }),
+    );
+
+    expect(listCodexSkills).toHaveBeenCalledWith({ cwd: "/repo" });
+  });
+
+  it("uses an empty placeholder catalog instead of reusing previous cwd data", () => {
+    const options = codexSkillsQueryOptions({ cwd: "/repo-a" });
+    expect(options.placeholderData).toEqual({
+      skills: [],
+      fetchedAt: "1970-01-01T00:00:00.000Z",
+    });
   });
 });
 

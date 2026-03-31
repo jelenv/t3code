@@ -58,6 +58,22 @@ it.effect("trims websocket request id and nested orchestration ids", () =>
   }),
 );
 
+it.effect("accepts server.listCodexSkills requests", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWebSocketRequest({
+      id: "req-skills-1",
+      body: {
+        _tag: WS_METHODS.serverListCodexSkills,
+        cwd: "/repo",
+      },
+    });
+    assert.strictEqual(parsed.body._tag, WS_METHODS.serverListCodexSkills);
+    if (parsed.body._tag === WS_METHODS.serverListCodexSkills) {
+      assert.strictEqual(parsed.body.cwd, "/repo");
+    }
+  }),
+);
+
 it.effect("accepts git.preparePullRequestThread requests", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWebSocketRequest({

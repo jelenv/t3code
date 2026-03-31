@@ -14,6 +14,7 @@ import {
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderSession,
+  type ProviderTurnSkillReference,
   type ProviderTurnStartResult,
   RuntimeMode,
   ProviderInteractionMode,
@@ -31,7 +32,11 @@ import {
   resolveCodexModelForAccount,
   type CodexAccountSnapshot,
 } from "./provider/codexAccount";
-import { buildCodexInitializeParams, killCodexChildProcess } from "./provider/codexAppServer";
+import {
+  buildCodexInitializeParams,
+  decodeEnabledCodexSkills,
+  killCodexChildProcess,
+} from "./provider/codexAppServer";
 
 export { buildCodexInitializeParams } from "./provider/codexAppServer";
 export { readCodexAccountSnapshot, resolveCodexModelForAccount } from "./provider/codexAccount";
@@ -109,6 +114,7 @@ export interface CodexAppServerSendTurnInput {
   readonly threadId: ThreadId;
   readonly input?: string;
   readonly attachments?: ReadonlyArray<{ type: "image"; url: string }>;
+  readonly skillReferences?: ReadonlyArray<ProviderTurnSkillReference>;
   readonly model?: string;
   readonly serviceTier?: string | null;
   readonly effort?: string;
@@ -138,6 +144,94 @@ export interface CodexThreadSnapshot {
 }
 
 const CODEX_VERSION_CHECK_TIMEOUT_MS = 4_000;
+const CODEX_SKILL_TOKEN_REGEX = /(^|\s)\$([^\s$]+)(?=\s|$)/g;
+
+type CodexTurnInputItem =
+  | { type: "text"; text: string; text_elements: [] }
+  | { type: "image"; url: string }
+  | { type: "skill"; name: string; path: string };
+
+interface CodexPromptSegmentText {
+  type: "text";
+  text: string;
+}
+
+interface CodexPromptSegmentSkill {
+  type: "skill";
+  name: string;
+  raw: string;
+}
+
+type CodexPromptSegment = CodexPromptSegmentText | CodexPromptSegmentSkill;
+
+function pushPromptTextSegment(segments: CodexPromptSegment[], text: string): void {
+  if (text.length === 0) {
+    return;
+  }
+  const last = segments[segments.length - 1];
+  if (last?.type === "text") {
+    last.text += text;
+    return;
+  }
+  segments.push({ type: "text", text });
+}
+
+function splitPromptIntoCodexSkillSegments(text: string): CodexPromptSegment[] {
+  const segments: CodexPromptSegment[] = [];
+  if (text.length === 0) {
+    return segments;
+  }
+
+  let cursor = 0;
+  for (const match of text.matchAll(CODEX_SKILL_TOKEN_REGEX)) {
+    const fullMatch = match[0];
+    const prefix = match[1] ?? "";
+    const skillName = match[2] ?? "";
+    const matchIndex = match.index ?? 0;
+    const skillStart = matchIndex + prefix.length;
+    const skillEnd = skillStart + fullMatch.length - prefix.length;
+
+    if (skillStart > cursor) {
+      pushPromptTextSegment(segments, text.slice(cursor, skillStart));
+    }
+
+    if (skillName.length > 0) {
+      segments.push({
+        type: "skill",
+        name: skillName,
+        raw: text.slice(skillStart, skillEnd),
+      });
+    } else {
+      pushPromptTextSegment(segments, text.slice(skillStart, skillEnd));
+    }
+
+    cursor = skillEnd;
+  }
+
+  if (cursor < text.length) {
+    pushPromptTextSegment(segments, text.slice(cursor));
+  }
+
+  return segments;
+}
+
+function appendCodexTextInput(turnInput: CodexTurnInputItem[], text: string): void {
+  if (text.length === 0) {
+    return;
+  }
+
+  const last = turnInput[turnInput.length - 1];
+  if (last?.type === "text") {
+    last.text += text;
+    return;
+  }
+
+  turnInput.push({
+    type: "text",
+    text,
+    text_elements: [],
+  });
+}
 
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
 const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
@@ -651,15 +745,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const context = this.requireSession(input.threadId);
     context.collabReceiverTurns.clear();
 
-    const turnInput: Array<
-      { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
-    > = [];
-    if (input.input) {
-      turnInput.push({
-        type: "text",
-        text: input.input,
-        text_elements: [],
-      });
+    const turnInput: CodexTurnInputItem[] = [];
+    for (const item of await this.buildTurnInputItems(
+      context,
+      input.input,
+      input.skillReferences,
+    )) {
+      turnInput.push(item);
     }
     for (const attachment of input.attachments ?? []) {
       if (attachment.type === "image") {
@@ -683,9 +775,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     const turnStartParams: {
       threadId: string;
-      input: Array<
-        { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
-      >;
+      input: CodexTurnInputItem[];
       model?: string;
       serviceTier?: string | null;
       effort?: string;
@@ -750,6 +840,95 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ? { resumeCursor: context.session.resumeCursor }
         : {}),
     };
+  }
+
+  private async buildTurnInputItems(
+    context: CodexSessionContext,
+    text: string | undefined,
+    explicitSkillReferences: ReadonlyArray<ProviderTurnSkillReference> | undefined,
+  ): Promise<CodexTurnInputItem[]> {
+    const turnInput: CodexTurnInputItem[] = [];
+    if (!text) {
+      return turnInput;
+    }
+
+    const segments = splitPromptIntoCodexSkillSegments(text);
+    const hasSkillToken = segments.some((segment) => segment.type === "skill");
+    if (!hasSkillToken) {
+      appendCodexTextInput(turnInput, text);
+      return turnInput;
+    }
+
+    let skillsByName: Map<string, Array<{ name: string; path: string }>> | null = null;
+    let skillsByPath: Map<string, { name: string; path: string }> | null = null;
+    try {
+      const response = await this.sendRequest(
+        context,
+        "skills/list",
+        context.session.cwd ? { cwds: [context.session.cwd] } : {},
+      );
+      skillsByName = new Map<string, Array<{ name: string; path: string }>>();
+      skillsByPath = new Map<string, { name: string; path: string }>();
+      for (const skill of decodeEnabledCodexSkills(response)) {
+        const existing = skillsByName.get(skill.name) ?? [];
+        existing.push({ name: skill.name, path: skill.path });
+        skillsByName.set(skill.name, existing);
+        skillsByPath.set(skill.path, { name: skill.name, path: skill.path });
+      }
+    } catch {
+      skillsByName = new Map<string, Array<{ name: string; path: string }>>();
+      skillsByPath = null;
+    }
+
+    const explicitSkillByTokenIndex = new Map(
+      (explicitSkillReferences ?? []).map((skill) => [skill.tokenIndex, skill] as const),
+    );
+    let skillTokenIndex = 0;
+    for (const segment of segments) {
+      if (segment.type === "text") {
+        appendCodexTextInput(turnInput, segment.text);
+        continue;
+      }
+
+      const explicitSkill = explicitSkillByTokenIndex.get(skillTokenIndex) ?? null;
+      skillTokenIndex += 1;
+      if (explicitSkill) {
+        const resolvedExplicitSkill = skillsByPath?.get(explicitSkill.path) ?? null;
+        if (resolvedExplicitSkill) {
+          turnInput.push({
+            type: "skill",
+            name: resolvedExplicitSkill.name,
+            path: resolvedExplicitSkill.path,
+          });
+          continue;
+        }
+        if (skillsByPath === null) {
+          turnInput.push({
+            type: "skill",
+            name: explicitSkill.name,
+            path: explicitSkill.path,
+          });
+          continue;
+        }
+        appendCodexTextInput(turnInput, segment.raw);
+        continue;
+      }
+
+      const matches = skillsByName.get(segment.name) ?? [];
+      if (matches.length !== 1) {
+        appendCodexTextInput(turnInput, segment.raw);
+        continue;
+      }
+
+      const resolved = matches[0]!;
+      turnInput.push({
+        type: "skill",
+        name: resolved.name,
+        path: resolved.path,
+      });
+    }
+
+    return turnInput;
   }
 
   async interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void> {
